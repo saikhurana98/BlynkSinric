@@ -1,0 +1,420 @@
+#include <Arduino.h>
+#define BLYNK_PRINT Serial
+
+#if defined(ARDUINO_ARCH_ESP8266)
+#define GET_CHIPID() (ESP.getChipId())
+#include <FS.h>
+#include <ESP8266WiFi.h>
+#include <ESP8266WebServer.h>
+#include <BlynkSimpleEsp8266.h>
+#elif defined(ARDUINO_ARCH_ESP32)
+#define GET_CHIPID() (ESP.getEfuseMac())
+#include <SPIFFS.h>
+#include <WiFi.h>
+#include <WebServer.h>
+#include <BlynkSimpleEsp32.h>
+#endif
+#include <AutoConnect.h>
+
+//Config Blynk structure
+struct BlynkConfig
+{
+  String devicename;
+  String blynkServer;
+  String blynkPort;
+  String blynkToken;
+};
+
+const char *fileName = "/config.txt"; // filename of config file.
+
+BlynkConfig blynkconfig; // global configuration object
+int port;
+IPAddress ip;
+
+#if defined(ARDUINO_ARCH_ESP8266)
+ESP8266WebServer Server;
+#elif defined(ARDUINO_ARCH_ESP32)
+WebServer Server;
+#endif
+
+AutoConnect Portal(Server);
+AutoConnectConfig Config;
+
+//Display root page
+void handleRoot()
+{
+  String content =
+      "<html>"
+      "<head>"
+      "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
+      "</head>"
+      "<body>"
+      "<center><H1>Blynk Device"
+      "</br>"
+      "</H1>Check github for project and schematic</p>"
+      "<a href=\"https://github.com/Hieromon/AutoConnect\" target=\"_blank\">https://github.com/Hieromon/AutoConnect</a><br>"
+      "</center></p></br>"
+      "<p style=\"padding-top:10px;text-align:center\">" AUTOCONNECT_LINK(COG_24) "</p>"
+                                                                                  "</body>"
+                                                                                  "</html>";
+  Server.send(200, "text/html", content);
+}
+
+// Loading from PROGMEM
+const char settings[] PROGMEM = R"raw(
+[
+  {
+  "title" : "Blynk Settings",
+  "uri" : "/Settings",
+  "menu" : true,
+  "element" : [
+    {
+      "name" : "caption1",
+      "type" : "ACText",
+      "value" : "<H1>Settings</H1></br>"
+    },
+     {
+      "name" : "caption2",
+      "type" : "ACText",
+      "value" : "<H2>Device settings</h2>"
+    },
+    {
+        "name": "blynkserver",
+        "type": "ACInput",
+        "value": "",
+        "label": "Server<br>",
+        "pattern": "^(([a-zA-Z0-9]|[a-zA-Z0-9][a-zA-Z0-9\\-]*[a-zA-Z0-9])\\.)*([A-Za-z0-9]|[A-Za-z0-9][A-Za-z0-9\\-]*[A-Za-z0-9])$",
+        "placeholder": "Blynk server"
+    },    
+    {
+        "name": "blynkport",
+        "type": "ACInput",
+        "label": "Port<br>",
+        "pattern": "^[0-9]{2}$",
+        "placeholder": "8080"
+    },
+    {
+        "name": "blynktoken",
+        "type": "ACInput",
+        "label": "Auth Token<br>",
+        "placeholder": "Authorization Token"
+    }, 
+    {
+        "name": "devicename",
+        "type": "ACInput",
+        "label": "Device Name<br>",
+        "placeholder": "Hostname"
+    }, 
+    {
+      "name": "save",
+      "type": "ACSubmit",
+      "value": "Save",
+      "uri": "/save"
+    },
+    {
+        "name": "discard",
+        "type": "ACSubmit",
+        "value": "Discard Settings",
+        "uri": "/discard"
+      }
+  ]
+ },
+ {
+    "title": "Blynk Setting",
+    "uri": "/savedone",
+    "menu": false,
+    "element": [
+      {
+        "name": "caption",
+        "type": "ACText",
+        "value": "<h4>Parameters saved as:</h4>",
+        "style": "text-align:center;color:#2f4f4f;padding:10px;"
+      },
+      {
+        "name": "parameters",
+        "type": "ACText"
+      },
+      {
+        "name": "settings",
+        "type": "ACSubmit",
+        "value": "Blynk Settings",
+        "uri": "/Settings"
+      },
+      {
+        "name": "clear",
+        "type": "ACSubmit",
+        "value": "Reset",
+        "uri": "/Settings#rdlg"
+      }
+    ]
+  },
+  {
+    "title": "Blynk Setting",
+    "uri": "/discard",
+    "menu": false,
+    "element": [
+      {
+        "name": "caption",
+        "type": "ACText",
+        "value": "<h2>Parameters Deleted!</h2>",
+        "style": "text-align:center;color:#2f4f4f;padding:10px;"
+      },
+      {
+        "name": "settings",
+        "type": "ACSubmit",
+        "value": "Blynk Settings",
+        "uri": "/Settings"
+      }
+    ]
+  }
+]
+)raw";
+
+// ==========================================
+// Saves the configuration to a file
+// ==========================================
+bool saveConfiguration(const char *filename, BlynkConfig &saveconfig)
+{
+  // Delete existing file, otherwise the configuration is appended to the file
+
+  SPIFFS.remove(filename);
+
+  // Open file for writing
+  File file = SPIFFS.open(filename, "w");
+  if (!file)
+  {
+    Serial.println(F("Failed to create file"));
+    return false;
+  }
+
+  // Allocate the memory pool on the stack
+  // Don't forget to change the capacity to match your JSON document.
+  // Use https://arduinojson.org/assistant/ to compute the capacity.
+  StaticJsonDocument<512> doc;
+
+  // Set the values
+  doc["devicename"] = saveconfig.devicename;
+  doc["blynkserver"] = saveconfig.blynkServer;
+  doc["blynkport"] = saveconfig.blynkPort;
+  doc["blynktoken"] = saveconfig.blynkToken;
+
+  // Serialize JSON to file
+  if (serializeJson(doc, file) == 0)
+  {
+    Serial.println(F("Failed to write to file"));
+  }
+  else
+  {
+    Serial.println(F("File saved"));
+  }
+
+  // Close the file (File's destructor doesn't close the file)
+  file.close();
+  return true;
+}
+
+// ==========================================
+// Loads the configuration from a file
+// ==========================================
+bool loadConfiguration(const char *filename, BlynkConfig &loadconfig)
+{
+  // Open file for reading
+  File file = SPIFFS.open(filename, "r");
+
+  if (!file)
+    return false;
+
+  // Allocate the memory pool on the stack.
+  // Don't forget to change the capacity to match your JSON document.
+  // Use arduinojson.org/assistant to compute the capacity.
+  DynamicJsonDocument doc(512);
+
+  // Parse the root object
+  DeserializationError error = deserializeJson(doc, file);
+  if (error) {
+    Serial.println(F("Failed to read file, using default configuration"));
+    return false;
+  }
+
+  // Copy values from the JsonObject to the Config
+
+  Serial.println(F("Valid config file."));
+
+  loadconfig.devicename = (const char *)doc["devicename"];
+  loadconfig.blynkServer = (const char *)doc["blynkserver"];
+  loadconfig.blynkPort = (const char *)doc["blynkport"];
+  loadconfig.blynkToken = (const char *)doc["blynktoken"];
+  Serial.printf("\n JSON LOAD: ");
+  // serializeJson(doc, Serial);
+
+  // Close the file (File's destructor doesn't close the file)
+  file.close();
+  return true;
+}
+
+// ==========================================
+// Prints the content of a file to the Serial
+// ==========================================
+bool printFile(const char *filename)
+{
+  // Open file for reading
+  File file = SPIFFS.open(fileName, "r");
+
+  if (!file)
+  {
+    Serial.println(F("Failed to read file"));
+    return false;
+  }
+
+  // Extract each characters by one by one
+  while (file.available())
+  {
+    Serial.print((char)file.read());
+  }
+  Serial.println();
+
+  // Close the file (File's destructor doesn't close the file)
+  file.close();
+  return true;
+}
+
+//when hitting save, here the values are stored.
+void saveSetting()
+{
+  // Retrieve the value of a input-box named "feels"
+  blynkconfig.devicename = Server.arg("devicename");
+  blynkconfig.blynkServer = Server.arg("blynkserver");
+  blynkconfig.blynkPort = Server.arg("blynkport");
+  blynkconfig.blynkToken = Server.arg("blynktoken");
+
+  saveConfiguration(fileName, blynkconfig);
+  // Echo back the value
+  Server.sendHeader("Location", String("/savedone"), true);
+  Server.send(302, "text/plain", "");
+}
+
+String saveDone(AutoConnectAux &aux, PageArgument &args)
+{
+  // The 'where()' function returns the AutoConnectAux that caused
+  // the transition to this page.
+  // AutoConnectAux*   blynk_setting = Portal.where();
+
+  saveConfiguration(fileName, blynkconfig);
+  // Echo back saved parameters to AutoConnectAux page.
+  AutoConnectText &echo = aux.getElement<AutoConnectText>("parameters");
+  echo.value = "Server: " + blynkconfig.blynkServer;
+  echo.value += "<br>Port: " + blynkconfig.blynkPort + "<br>";
+  echo.value += "Auth Token: " + blynkconfig.blynkToken + "<br>";
+  echo.value += "Device Name: " + blynkconfig.devicename + "<br>";
+
+  return String("");
+}
+
+String discardConfiguration(AutoConnectAux &aux, PageArgument &args)
+{
+  blynkconfig.blynkServer = "";
+  blynkconfig.blynkPort = "";
+  blynkconfig.blynkToken = "";
+  blynkconfig.devicename = "";
+  saveConfiguration(fileName, blynkconfig);
+  return String("");
+}
+
+// Here the values are loaded into the webpage
+String settingsOn(AutoConnectAux &aux, PageArgument &args)
+{
+  AutoConnectInput &devicename = aux.getElement<AutoConnectInput>("devicename");
+  devicename.value = blynkconfig.devicename;
+
+  AutoConnectInput &blynkServer = aux.getElement<AutoConnectInput>("blynkserver");
+  blynkServer.value = blynkconfig.blynkServer;
+
+  AutoConnectInput &blynkPort = aux.getElement<AutoConnectInput>("blynkport");
+  blynkPort.value = blynkconfig.blynkPort;
+
+  AutoConnectInput &blynkToken = aux.getElement<AutoConnectInput>("blynktoken");
+  blynkToken.value = blynkconfig.blynkToken;
+
+  return String();
+}
+
+void setup()
+{
+  delay(5000);
+  Serial.begin(115200);
+  Serial.println();
+
+  if (!SPIFFS.begin(true))
+  {
+    Serial.printf("\nFailed to Mount File System!\n");
+  }
+  else
+  {
+    Serial.print("SPIFFS Build Success!!");
+  }
+
+  if (!loadConfiguration(fileName, blynkconfig))
+  {
+    Serial.printf("\nConfig Read...Failed!! \n");
+  }
+  else
+  {
+    Serial.print("JSON load Success");
+  }
+  
+  if (!printFile(fileName))
+  {
+    if (Serial.available())
+      Serial.printf("Error Printing file");
+  }
+
+  // Autoconnect Config
+  Config.apid = String("GeerAC");
+
+  if (blynkconfig.devicename != "")
+  {
+    Config.apid = blynkconfig.devicename;
+    Config.hostName = blynkconfig.devicename;
+    Serial.println(F("Set Custom Name"));
+  }
+
+  if (Serial.available())
+    Serial.printf("\nAPID: %s", Config.apid.c_str());
+
+  Config.bootUri = AC_ONBOOTURI_HOME;
+  Config.homeUri = "/";
+  Config.autoReconnect = true;
+  Config.ota = AC_OTA_BUILTIN;
+
+  Server.on("/save", saveSetting);
+  Server.on("/", handleRoot);
+
+  Portal.load(settings);
+  Portal.on("/Settings", settingsOn, AC_EXIT_AHEAD);
+  Portal.on("/savedone", saveDone);
+  Portal.on("/discard", discardConfiguration);
+  Portal.config(Config);
+
+  if (Portal.begin())
+  {
+    Serial.println("WiFi connected: " + WiFi.localIP().toString());
+    Serial.println(blynkconfig.blynkToken);
+  }
+
+  if (blynkconfig.blynkServer.isEmpty()) {
+    Blynk.config(blynkconfig.blynkToken.c_str(), ip.fromString(blynkconfig.blynkServer), (int)blynkconfig.blynkPort.c_str());
+  } else {
+    Blynk.config(blynkconfig.blynkToken.c_str());
+  }
+
+  if(!Blynk.connect()) {
+    Serial.println("Blynk Connect Failed");
+  }
+   
+}
+
+void loop()
+{
+  Portal.handleClient();
+  Blynk.run();
+}
